@@ -1,0 +1,19 @@
+# File Konfigurasi Rahasia
+.env
+client_secret.json
+token.json
+credentials.json
+
+# Folder Session & Cache
+waha-session/
+whatsapp-session/
+__pycache__/
+*.pyc
+
+# Folder Temp
+temp_download/
+temp_surat_*.pdf
+temp_surat_*.jpg
+
+# Log
+*.log
