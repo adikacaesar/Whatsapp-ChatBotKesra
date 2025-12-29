@@ -35,6 +35,7 @@ class GoogleService:
             return []
 
     def simpan_chat_id(self, id_pegawai, chat_id):
+        """Fitur Lama (Telegram) - Tetap disimpan untuk backward compatibility"""
         try:
             sheet = self.sheet_client.open(self.NAMA_SPREADSHEET)
             worksheet = sheet.worksheet(TAB_PEGAWAI)
@@ -57,7 +58,6 @@ class GoogleService:
             file_metadata = {'name': nama_file_baru, 'parents': [ID_FOLDER_DRIVE]}
             
             with open(filepath, 'rb') as f:
-                # PERUBAHAN PENTING: resumable=False
                 media = MediaIoBaseUpload(f, mimetype='image/jpeg', resumable=False)
                 file = self.drive_service.files().create(
                     body=file_metadata, 
@@ -79,7 +79,6 @@ class GoogleService:
             file_metadata = {'name': nama_file_baru, 'parents': [folder_tujuan]}
             
             with open(filepath, 'rb') as f:
-                # PERUBAHAN PENTING: resumable=False
                 media = MediaIoBaseUpload(f, mimetype=mime_type, resumable=False)
                 file = self.drive_service.files().create(
                     body=file_metadata, 
@@ -97,7 +96,6 @@ class GoogleService:
         try:
             file_metadata = {'name': nama_file, 'parents': [ID_FOLDER_DRIVE]}
             fh = io.BytesIO(isi_teks.encode('utf-8'))
-            # Text file biasanya kecil, resumable=False lebih aman
             media = MediaIoBaseUpload(fh, mimetype='text/plain', resumable=False)
             file = self.drive_service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
             return file.get('webViewLink')
@@ -208,4 +206,41 @@ class GoogleService:
             return False
         except Exception as e:
             print(f"❌ Gagal hapus config: {e}")
+            return False
+
+    # ==========================================
+    #  [BARU] FASE 1: KONTAK & VALIDASI (WAHA)
+    # ==========================================
+
+    def cek_kontak_terdaftar(self, id_pegawai):
+        """
+        Mengecek apakah ID Pegawai ini sudah punya Nomor WA di sheet kontak_pegawai.
+        Return: True jika ada, False jika belum.
+        """
+        try:
+            sheet = self.sheet_client.open(self.NAMA_SPREADSHEET)
+            worksheet = sheet.worksheet(TAB_KONTAK)
+            cell = worksheet.find(str(id_pegawai))
+            return cell is not None
+        except gspread.exceptions.WorksheetNotFound:
+            print(f"⚠️ Sheet '{TAB_KONTAK}' belum dibuat! Harap buat manual di Excel.")
+            return False
+        except Exception:
+            return False
+
+    def simpan_kontak_baru(self, id_pegawai, nomor_wa):
+        """
+        Menyimpan pasangan ID Pegawai & Nomor WA ke sheet kontak_pegawai.
+        """
+        try:
+            sheet = self.sheet_client.open(self.NAMA_SPREADSHEET)
+            worksheet = sheet.worksheet(TAB_KONTAK)
+            
+            waktu = time.strftime('%Y-%m-%d %H:%M:%S')
+            
+            # Format Data: [ID, Nomor WA, Updated At]
+            worksheet.append_row([str(id_pegawai), str(nomor_wa), waktu])
+            return True
+        except Exception as e:
+            print(f"❌ Gagal simpan kontak: {e}")
             return False

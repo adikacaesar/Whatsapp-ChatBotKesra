@@ -25,3 +25,4 @@ ID_FOLDER_SURAT = os.getenv("ID_FOLDER_SURAT", "")
 TAB_PEGAWAI = "ID_Pegawai"
 TAB_RKM = "RKM"
 TAB_CONFIG_NOTIF = "Config_Notif"
+TAB_KONTAK = "Kontak_Pegawai"

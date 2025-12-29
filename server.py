@@ -8,7 +8,7 @@ from flask import Flask, request, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 
 # --- IMPORT MODULE BUATAN SENDIRI ---
-from core.config import WAHA_BASE_URL, WAHA_SESSION, WAHA_API_KEY, TAB_PEGAWAI
+from core.config import WAHA_BASE_URL, WAHA_SESSION, WAHA_API_KEY
 from core.services import GoogleService
 from handlers.main_handler import BotHandler
 
@@ -18,14 +18,13 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-print("🚀 Memulai Server Bot Kesra (Stabil)...")
+print("🚀 Memulai Server Bot Kesra (Fase 1 - Final)...")
 google_service = GoogleService()
 bot = BotHandler(google_service)
 
 # ==========================================
-# 0. MEMORI ANTI-DUPLIKAT (BARU)
+# 0. MEMORI ANTI-DUPLIKAT
 # ==========================================
-# Menyimpan 1000 ID pesan terakhir agar tidak diproses 2x
 PROCESSED_MSG_IDS = []
 
 # ==========================================
@@ -35,17 +34,19 @@ def kirim_pesan_via_waha(chat_id, text):
     url = f"{WAHA_BASE_URL}/api/sendText"
     headers = {"X-Api-Key": WAHA_API_KEY, "Content-Type": "application/json"}
     payload = {"session": WAHA_SESSION, "chatId": chat_id, "text": text}
+    
     try:
-        # Sedikit delay untuk menjaga urutan pesan
-        time.sleep(0.3)
+        # Delay sedikit biar manusiawi
+        time.sleep(0.5) 
         requests.post(url, json=payload, headers=headers)
     except Exception as e:
-        logger.error(f"Error WAHA: {e}")
+        logger.error(f"❌ Error WAHA: {e}")
 
+# Inject fungsi kirim ke dalam Bot Handler
 bot.kirim_pesan = kirim_pesan_via_waha
 
 # ==========================================
-# 2. HELPER: DOWNLOAD MEDIA
+# 2. HELPER: DOWNLOAD MEDIA (Versi Lama Kamu - Robust)
 # ==========================================
 def download_media(source, mime_type):
     try:
@@ -55,17 +56,19 @@ def download_media(source, mime_type):
         if "image" in mime_type: ext = "jpg"
         elif "pdf" in mime_type: ext = "pdf"
         elif "png" in mime_type: ext = "png"
+        elif "spreadsheet" in mime_type or "excel" in mime_type: ext = "xlsx"
         
+        # Nama file unik
         filename = f"temp_download/file_{int(time.time())}_{os.urandom(4).hex()}.{ext}"
         
-        # --- KASUS A: URL HTTP ---
+        # A. URL HTTP
         if source.startswith("http"):
             response = requests.get(source)
             if response.status_code == 200:
                 with open(filename, 'wb') as f: f.write(response.content)
                 return filename
 
-        # --- KASUS B: BASE64 ---
+        # B. BASE64
         source = source.strip()
         if "," in source and "base64" in source[:50]:
             _, encoded = source.split(",", 1)
@@ -84,17 +87,31 @@ def download_media(source, mime_type):
         return None
 
 # ==========================================
-# 3. SCHEDULER
+# 3. SCHEDULER (Diaktifkan Kembali)
 # ==========================================
-scheduler = BackgroundScheduler()
 def setup_scheduler():
-    scheduler.remove_all_jobs()
-    # (Di sini Anda bisa mengaktifkan lagi logika scheduler jika file excel sudah siap)
-    # Untuk saat ini kita pass dulu agar fokus ke chat
-    pass 
-    
-bot.setup_scheduler = setup_scheduler
-scheduler.start()
+    scheduler = BackgroundScheduler(timezone="Asia/Jakarta")
+    try:
+        # Load config dari Google Sheets
+        configs = google_service.ambil_config_notif()
+        for conf in configs:
+            if conf.get('Status') == 'ON':
+                jam, menit = str(conf['Waktu']).split(':')
+                scheduler.add_job(
+                    func=bot.jalankan_notifikasi_pagi,
+                    trigger='cron',
+                    hour=int(jam),
+                    minute=int(menit),
+                    args=[{'pesan': conf['Pesan'], 'target': conf['Target']}],
+                    id=f"job_{jam}_{menit}"
+                )
+        scheduler.start()
+        print("⏰ Scheduler berjalan.")
+    except Exception as e:
+        print(f"⚠️ Scheduler Error (Mungkin sheet kosong): {e}")
+
+# Panggil setup scheduler (bisa dimatikan kalau error)
+setup_scheduler()
 
 # ==========================================
 # 4. ROUTE WEBHOOK (LOGIKA UTAMA)
@@ -102,73 +119,71 @@ scheduler.start()
 @app.route('/webhook', methods=['POST'])
 def webhook():
     data = request.json
+    if not data: return "OK", 200
+
+    # Handling Payload yang kadang nested, kadang tidak (Robustness Kodingan Lama)
     payload = data.get('payload', data)
 
     # 1. Filter Dasar
     if payload.get('fromMe'): return "OK", 200
     
-    chat_id = payload.get('from')
+    chat_id = payload.get('from') # Format: 628xxx@c.us
     if not chat_id: return "OK", 200 
     
-    # --- [BARU] FILTER ANTI-DUPLIKAT ---
-    msg_id = payload.get('id')
-    # ID di WAHA biasanya formatnya: false_NomorHP@c.us_IDUNIK
+    # Abaikan Status & Grup (Sementara)
+    if 'status@broadcast' in chat_id or '@g.us' in chat_id:
+        return "OK", 200
+
+    # --- FILTER ANTI-DUPLIKAT ---
+    msg_id = payload.get('id', '')
     if msg_id and msg_id in PROCESSED_MSG_IDS:
-        print(f"♻️ Skip pesan duplikat (ID: {msg_id[-8:]}...)")
         return "OK", 200
     
-    # Jika pesan baru, simpan ID-nya
     if msg_id:
         PROCESSED_MSG_IDS.append(msg_id)
-        # Jaga agar memori tidak penuh, buang yang lama jika > 1000
-        if len(PROCESSED_MSG_IDS) > 1000:
-            PROCESSED_MSG_IDS.pop(0)
+        if len(PROCESSED_MSG_IDS) > 1000: PROCESSED_MSG_IDS.pop(0)
 
     # -----------------------------------
-
-    sender_name = payload.get('_data', {}).get('notifyName', 'User')
+    sender_name = payload.get('pushName') or payload.get('_data', {}).get('notifyName', 'User')
 
     # --- DETEKSI FILE ---
-    has_media = payload.get('hasMedia', False)
-    mimetype = payload.get('mimetype', '')
-    msg_type = payload.get('type', '')
-    
-    is_file = has_media or (msg_type in ['image', 'document']) or ('image' in mimetype)
+    mimetype = payload.get('mimetype') or payload.get('_data', {}).get('mimetype')
+    is_file = False
+    if mimetype:
+        is_file = ('application' in mimetype) or ('image' in mimetype) or ('pdf' in mimetype)
 
     if is_file:
         print(f"📁 Mendeteksi Lampiran dari {sender_name}...")
         
-        media_source = payload.get('mediaUrl') or payload.get('url')
+        media_source = payload.get('mediaUrl') or payload.get('body')
         
-        # Cek Body & _data Body
-        body = payload.get('body', '')
-        if len(body) > 200: media_source = body
-        
-        if not media_source:
-             hidden_body = payload.get('_data', {}).get('body', '')
-             if len(hidden_body) > 200: media_source = hidden_body
+        # Fallback cek _data jika body kosong
+        if not media_source or (len(str(media_source)) < 50 and not str(media_source).startswith('http')):
+             media_source = payload.get('_data', {}).get('body')
 
         if media_source:
             local_path = download_media(media_source, mimetype)
             if local_path:
                 caption = payload.get('caption', '')
                 if not caption: caption = payload.get('_data', {}).get('caption', '')
-                if len(caption) > 200: caption = ""
-
+                
                 bot.handle_incoming_file(chat_id, local_path, mimetype, caption)
                 return "OK", 200
             else:
                 print("❌ Gagal simpan file.")
-        else:
-            print("⚠️ File terdeteksi tapi kosong.")
     
     # --- PESAN TEKS BIASA ---
     else:
         body = payload.get('body', '')
-        # Pastikan body bukan sampah Base64
-        if body and not body.startswith('data:') and len(body) < 1000:
+        
+        # Pastikan body valid
+        if body and not str(body).startswith('data:') and len(body) < 2000:
             print(f"📩 {sender_name}: {body}")
-            bot.proses_pesan(chat_id, body, sender_name)
+            
+            # [PENTING] PERUBAHAN UTAMA DI SINI
+            # Kita panggil handle_text_message dengan 4 ARGUMEN
+            # Argumen ke-4 adalah nomor_pengirim (sama dengan chat_id di WAHA)
+            bot.handle_text_message(chat_id, body, sender_name, chat_id)
 
     return "OK", 200
 
