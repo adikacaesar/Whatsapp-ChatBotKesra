@@ -1,9 +1,10 @@
-from core.config import TAB_PEGAWAI
+import time
+from core.config import TAB_KONTAK, TAB_PEGAWAI
 
 class AdminConfigMixin:
     """
-    Mixin khusus untuk menangani Konfigurasi Notifikasi & Broadcast.
-    Versi WAHA (Tanpa Telegram JobQueue)
+    Menu 5: Konfigurasi Notifikasi & Broadcast (Versi Hybrid WAHA)
+    Fitur: Wizard Config, Target Selection, Test Mode, & Broadcast Fixed.
     """
 
     def menu_config_notif(self, chat_id, session):
@@ -14,27 +15,26 @@ class AdminConfigMixin:
         pesan += "Daftar Jadwal Otomatis:\n"
         
         if not items:
-            pesan += "(Belum ada jadwal)\n"
+            pesan += "_(Belum ada jadwal)_\n"
         else:
             for i in items:
-                status = i.get('Status', 'OFF')
+                # Format: [Waktu] [Target] : Pesan
                 waktu = i.get('Waktu', '??:??')
                 target = i.get('Target', 'ALL')
                 isi = i.get('Pesan', '-')
-
-                icon = "🟢" if status == 'ON' else "🔴"
-                pesan += f"{icon} **{waktu}** [{target}] : {isi}\n"
+                pesan += f"🟢 **{waktu}** [{target}] : {isi}\n"
         
         pesan += "\n👇 **PILIHAN MENU:**\n"
         pesan += "1️⃣ Tambah Jadwal Baru\n"
         pesan += "2️⃣ Hapus Jadwal\n"
         pesan += "3️⃣ Kembali ke Menu Utama\n"
-        pesan += "4️⃣ BROADCAST PESAN (DADAKAN)"
+        pesan += "4️⃣ **BROADCAST PESAN (DADAKAN)**"
 
         session['state'] = 'CONFIG_MENU'
         self.kirim_pesan(chat_id, pesan)
 
     def config_process_menu(self, chat_id, text, session):
+        """Router Pilihan Menu"""
         if text == '1': # Tambah
             session['state'] = 'CONFIG_ADD_TIME'
             self.kirim_pesan(chat_id, "⏰ **Masukkan JAM Notifikasi:**\n(Format HH:MM, contoh: 07:00)")
@@ -50,13 +50,15 @@ class AdminConfigMixin:
             session['state'] = 'BROADCAST_INPUT'
             self.kirim_pesan(chat_id, 
                 "📢 **MODE BROADCAST MANUAL**\n\n"
-                "Ketik pesan yang ingin Anda kirimkan ke SEMUA pegawai.\n"
-                "(Ketik 'batal' untuk kembali)"
+                "Ketik pesan yang ingin Anda kirimkan ke **SEMUA PEGAWAI**.\n"
+                "_(Ketik 'batal' untuk kembali)_"
             )
         else:
-            self.kirim_pesan(chat_id, "Pilih angka 1-4.")
+            self.kirim_pesan(chat_id, "⚠️ Pilih angka 1-4.")
 
-    # --- WIZARD TAMBAH JADWAL ---
+    # ==========================================
+    # A. WIZARD TAMBAH JADWAL (FITUR LAMA YG BAGUS)
+    # ==========================================
     
     def config_add_time(self, chat_id, text, session):
         if ':' not in text:
@@ -68,16 +70,20 @@ class AdminConfigMixin:
         
         self.kirim_pesan(chat_id, 
             "🎯 **PILIH TARGET PENERIMA:**\n\n"
-            "Ketik salah satu:\n"
-            "• **ALL** (Semua Pegawai)\n"
-            "• **KABAG** (Hanya Pimpinan/Kabag)\n"
-            "• **STAFF** (Hanya Staff/Pelaksana)"
+            "Ketik angka/kode:\n"
+            "1. **ALL** (Semua Pegawai)\n"
+            "2. **KABAG** (Hanya Pimpinan)\n"
+            "3. **STAFF** (Hanya Staff)"
         )
 
     def config_select_target(self, chat_id, text, session):
-        target = text.upper()
-        if target not in ['ALL', 'KABAG', 'STAFF']:
-            self.kirim_pesan(chat_id, "⚠️ Pilihan salah. Ketik: ALL, KABAG, atau STAFF.")
+        # Normalisasi Input
+        target = "ALL"
+        if text == '1' or text.upper() == 'ALL': target = 'ALL'
+        elif text == '2' or text.upper() == 'KABAG': target = 'KABAG'
+        elif text == '3' or text.upper() == 'STAFF': target = 'STAFF'
+        else:
+            self.kirim_pesan(chat_id, "⚠️ Pilihan salah. Ketik 1, 2, atau 3.")
             return
 
         session['temp_config']['target'] = target
@@ -106,20 +112,15 @@ class AdminConfigMixin:
             self.kirim_pesan(chat_id, 
                 f"🧪 **[TEST MODE]**\n"
                 f"🔔 **{data['pesan']}**\n"
-                f"📅 (Tanggal Hari Ini)\n\n"
-                f"Halo {session['nama']}, (Isi Agenda)..."
+                f"Target: {data['target']}\n\n"
+                "Oke, sudah dicek? Ketik **2** untuk SIMPAN permanen."
             )
-            self.kirim_pesan(chat_id, "Oke, sudah dicek? Ketik **2** untuk SIMPAN permanen.")
             
         elif text == '2': # SIMPAN
             sukses = self.google.tambah_config_notif(data['waktu'], data['pesan'], data['target'])
             if sukses:
                 self.kirim_pesan(chat_id, "✅ Berhasil disimpan ke Excel!")
-                
-                # Reload Scheduler di Server (Hook)
-                if hasattr(self, 'setup_scheduler'):
-                    self.setup_scheduler()
-                
+                # Refresh Menu
                 self.menu_config_notif(chat_id, session)
             else:
                 self.kirim_pesan(chat_id, "❌ Gagal simpan ke Excel.")
@@ -130,32 +131,52 @@ class AdminConfigMixin:
         sukses = self.google.hapus_config_notif(text)
         if sukses:
             self.kirim_pesan(chat_id, f"✅ Jadwal {text} dihapus.")
-            # Reload Scheduler di Server (Hook)
-            if hasattr(self, 'setup_scheduler'):
-                self.setup_scheduler()
         else:
             self.kirim_pesan(chat_id, "❌ Jam tidak ditemukan.")
         self.menu_config_notif(chat_id, session)
 
-    # --- BROADCAST MANUAL ---
+    # ==========================================
+    # B. LOGIC BROADCAST (SUDAH DIPERBAIKI)
+    # ==========================================
     def broadcast_process(self, chat_id, text, session):
         if text.lower() == 'batal':
             self.menu_config_notif(chat_id, session)
             return
 
+        pesan_broadcast = text
         self.kirim_pesan(chat_id, "⏳ Mengirim pesan ke semua pegawai...")
         
-        db_pegawai = self.google.ambil_data(TAB_PEGAWAI)
-        count = 0
+        # 1. AMBIL DATA DARI SHEET KONTAK (CORRECT LOGIC)
+        try:
+            data_kontak = self.google.ambil_data(TAB_KONTAK)
+        except Exception as e:
+            self.kirim_pesan(chat_id, f"❌ Gagal mengambil data kontak: {e}")
+            return
+
+        count_sukses = 0
         
-        for p in db_pegawai:
-            cid = p.get('Chat_ID')
-            if cid:
+        # 2. LOOPING KIRIM PESAN
+        for row in data_kontak:
+            # Ambil Nomor WA
+            target_wa = str(row.get('Nomor_WA', '')).strip()
+            
+            # Validasi nomor
+            if target_wa and len(target_wa) > 5:
+                # Jangan kirim ke diri sendiri (opsional)
+                if target_wa == chat_id:
+                    continue
+                    
+                # Kirim
                 try:
-                    msg = f"📢 **PENGUMUMAN DARI ADMIN**\n\n{text}"
-                    self.kirim_pesan(cid, msg)
-                    count += 1
-                except: pass
-        
-        self.kirim_pesan(chat_id, f"✅ Broadcast Selesai.\nTerkirim ke {count} orang.")
+                    self.kirim_pesan(target_wa, f"📢 *PENGUMUMAN*\n\n{pesan_broadcast}")
+                    count_sukses += 1
+                    time.sleep(1) # Jeda anti-spam
+                except:
+                    pass
+
+        # 3. LAPORAN
+        self.kirim_pesan(chat_id, 
+            f"✅ **Broadcast Selesai.**\n"
+            f"Terkirim ke {count_sukses} orang."
+        )
         self.menu_config_notif(chat_id, session)
